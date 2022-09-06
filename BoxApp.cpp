@@ -21,11 +21,35 @@ struct Vertex
     XMFLOAT3 Pos;
     XMFLOAT4 Color;
 };
+struct VPosData
+{
+	XMFLOAT3 Pos;
+};
+struct VColorData
+{
+	XMFLOAT4 Color;
+};
+//课后练习1
 struct  GchVertex
 {
 	XMFLOAT3 Pos;
+	XMFLOAT3 Tangent;
+	XMFLOAT3 Normal;
+	XMFLOAT2 Tex0;
+	XMFLOAT2 Tex1;
 	XMFLOAT4 Color;
 };
+
+D3D12_INPUT_ELEMENT_DESC gchVertexDesc[]=
+{
+	{"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+	{"TANGENT",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+	{"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,24,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+	{"TEXTCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,36,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+	{"TEXTCOORD",1,DXGI_FORMAT_R32G32_FLOAT,0,44,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+	{"COLOR",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,52,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+};
+
 //常量数据
 struct ObjectConstants
 {
@@ -186,8 +210,9 @@ void BoxApp::Draw(const GameTimer& gt)
 	// A command list can be reset after it has been added to the command queue via ExecuteCommandList.
     // Reusing the command list reuses memory.
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get()));
-
+	//1.要绑定的视口数量 2.指向视口数组的指针
     mCommandList->RSSetViewports(1, &mScreenViewport);
+	//裁剪矩形,参数同上
     mCommandList->RSSetScissorRects(1, &mScissorRect);
 
     // Indicate a state transition on the resource usage.
@@ -200,18 +225,24 @@ void BoxApp::Draw(const GameTimer& gt)
 	
     // Specify the buffers we are going to render to.
 	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
-
+	//将CBV堆设置到命令列表中
 	ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() };
 	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
-
+	//将根签名设置到命令列表中
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-	//所用的起始输入槽数量，要绑定的顶点缓冲区数量，指向顶点缓冲区数组的第一个元素地址（这里只有一个顶点缓冲区）
-	mCommandList->IASetVertexBuffers(0, 1, &mBoxGeo->VertexBufferView());
+	//1.所用的起始输入槽数量，
+	//2.要绑定的顶点缓冲区数量，
+	//3.指向顶点缓冲区数组的第一个元素地址（这里只有一个顶点缓冲区）
+	//mCommandList->IASetVertexBuffers(0, 1, &mBoxGeo->VertexBufferView());
+	mCommandList->IASetVertexBuffers(0, 1, &mBoxGeo->VertexPosBufferView());
+	mCommandList->IASetVertexBuffers(1, 1, &mBoxGeo->VertexColorBufferView());
 	//直接就是索引缓冲区的地址
 	mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
 	//设置图元拓扑结构
     mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	
+	//令描述符表和渲染流水线绑定
+	//1.欲绑定到的寄存器编号
+	//2.此参数为要向着色器绑定的描述符表中的第一个描述符位于描述符堆中的句柄
     mCommandList->SetGraphicsRootDescriptorTable(0, mCbvHeap->GetGPUDescriptorHandleForHeapStart());
 	//因为使用索引的绘制方式，用DrawIndexedInstanced代替DrawInstanced
 	//索引数量，暂为1，索引起始位置，每个索引加上次值（基准顶点地址），暂为0
@@ -300,15 +331,17 @@ void BoxApp::BuildDescriptorHeaps()
 
 void BoxApp::BuildConstantBuffers()
 {
+	//此常量区描述了绘制n个物体所需要的信息
 	mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
 	//凑整256b
 	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-
+	//缓冲区的起始地址
 	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
     // Offset to the ith object constant buffer in the buffer.
+	//偏移到缓冲区中绘制第i个物体所需的信息
     int boxCBufIndex = 0;
 	cbAddress += boxCBufIndex*objCBByteSize;
-
+	//D3D12_CONSTANT_BUFFER_VIEW_DESC描述的是绑定到HLSL中常量缓冲区结构体的常量缓冲区资源子集
 	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
 	cbvDesc.BufferLocation = cbAddress;
 	cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
@@ -327,18 +360,28 @@ void BoxApp::BuildRootSignature()
 	// thought of as defining the function signature.  
 
 	// Root parameter can be a table, root descriptor or root constants.
+	//根参数可以是一个描述符表，根描述符或者根常量
 	CD3DX12_ROOT_PARAMETER slotRootParameter[1];
 
 	// Create a single descriptor table of CBVs.
+	//创建一个只有一个CBV的描述符表
 	CD3DX12_DESCRIPTOR_RANGE cbvTable;
+	//将描述符表初始化。
+	//参数:
+	//1.
+	//2.描述符数量
+	//3.将这个描述符区域绑定到以此为基准的着色器寄存器
 	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
+	//将描述符表赋予根参数
 	slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable);
 
 	// A root signature is an array of root parameters.
+	//根签名由一组根参数构成
 	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, slotRootParameter, 0, nullptr, 
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
 	// create a root signature with a single slot which points to a descriptor range consisting of a single constant buffer
+	//创建仅含一个槽位的根签名（该槽位指向一个仅由单个常量缓冲区组成的描述符区域）
 	ComPtr<ID3DBlob> serializedRootSig = nullptr;
 	ComPtr<ID3DBlob> errorBlob = nullptr;
 	HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
@@ -367,24 +410,46 @@ void BoxApp::BuildShadersAndInputLayout()
     mInputLayout =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 }
 
 void BoxApp::BuildBoxGeometry()
 {
 	//1.立方体的基本数据
-    std::array<Vertex, 8> vertices =
-    {
-        Vertex({ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::White) }),
-		Vertex({ XMFLOAT3(-1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Black) }),
-		Vertex({ XMFLOAT3(+1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Red) }),
-		Vertex({ XMFLOAT3(+1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::Green) }),
-		Vertex({ XMFLOAT3(-1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Blue) }),
-		Vertex({ XMFLOAT3(-1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Yellow) }),
-		Vertex({ XMFLOAT3(+1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Cyan) }),
-		Vertex({ XMFLOAT3(+1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Magenta) })
-    };
+  //  std::array<Vertex, 8> vertices =
+  //  {
+  //      Vertex({ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::White) }),
+		//Vertex({ XMFLOAT3(-1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Black) }),
+		//Vertex({ XMFLOAT3(+1.0f, +1.0f, -1.0f), XMFLOAT4(Colors::Red) }),
+		//Vertex({ XMFLOAT3(+1.0f, -1.0f, -1.0f), XMFLOAT4(Colors::Green) }),
+		//Vertex({ XMFLOAT3(-1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Blue) }),
+		//Vertex({ XMFLOAT3(-1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Yellow) }),
+		//Vertex({ XMFLOAT3(+1.0f, +1.0f, +1.0f), XMFLOAT4(Colors::Cyan) }),
+		//Vertex({ XMFLOAT3(+1.0f, -1.0f, +1.0f), XMFLOAT4(Colors::Magenta) })
+  //  };
+	std::array<VPosData,8> verticesPos=
+	{
+		  VPosData({ XMFLOAT3(-1.0f, -1.0f, -1.0f) }),
+		  VPosData({ XMFLOAT3(-1.0f, +1.0f, -1.0f) }),
+		  VPosData({ XMFLOAT3(+1.0f, +1.0f, -1.0f) }),
+		  VPosData({ XMFLOAT3(+1.0f, -1.0f, -1.0f) }),
+		  VPosData({ XMFLOAT3(-1.0f, -1.0f, +1.0f) }),
+		  VPosData({ XMFLOAT3(-1.0f, +1.0f, +1.0f) }),
+		  VPosData({ XMFLOAT3(+1.0f, +1.0f, +1.0f) }),
+		  VPosData({ XMFLOAT3(+1.0f, -1.0f, +1.0f) })
+	};
+	 std::array<VColorData, 8> verticesColor =
+	{
+		VColorData({ XMFLOAT4(Colors::White) }),
+		VColorData({ XMFLOAT4(Colors::Black) }),
+		VColorData({ XMFLOAT4(Colors::Red) }),
+		VColorData({ XMFLOAT4(Colors::Green) }),
+		VColorData({ XMFLOAT4(Colors::Blue) }),
+		VColorData({ XMFLOAT4(Colors::Yellow) }),
+		VColorData({ XMFLOAT4(Colors::Cyan) }),
+		VColorData({ XMFLOAT4(Colors::Magenta) })
+	};
 	//1.立方体的基本数据:索引数组
 	std::array<std::uint16_t, 36> indices =
 	{
@@ -413,29 +478,48 @@ void BoxApp::BuildBoxGeometry()
 		4, 3, 7
 	};
 	//2.获取数据大小
-    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+    //const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
 	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
-	const UINT gchByteSize = (UINT)vertices.size() * sizeof(Vertex);
+	//练习2
+	const UINT vpbByteSize = (UINT)verticesPos.size() * sizeof(VPosData);
+	const UINT vcbByteSize = (UINT)verticesColor.size() * sizeof(VColorData);
+
+
 	//生成
 	mBoxGeo = std::make_unique<MeshGeometry>();
 	mBoxGeo->Name = "boxGeo";
 	
 	
-	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mBoxGeo->VertexBufferCPU));
-	CopyMemory(mBoxGeo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+	//ThrowIfFailed(D3DCreateBlob(vbByteSize, &mBoxGeo->VertexBufferCPU));
+	//CopyMemory(mBoxGeo->VertexBufferCPU->GetBufferPointer(), verticesPos.data(), vbByteSize);
+	//练习2
+	ThrowIfFailed(D3DCreateBlob(vpbByteSize, &mBoxGeo->VertexPosBufferCPU));
+	CopyMemory(mBoxGeo->VertexPosBufferCPU->GetBufferPointer(), verticesPos.data(), vpbByteSize);
+	ThrowIfFailed(D3DCreateBlob(vcbByteSize, &mBoxGeo->VertexColorBufferCPU));
+	CopyMemory(mBoxGeo->VertexColorBufferCPU->GetBufferPointer(), verticesColor.data(), vcbByteSize);
+	
 	
 	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mBoxGeo->IndexBufferCPU));
 	CopyMemory(mBoxGeo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
 	//3.创建默认缓冲区,并把
-	mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), vertices.data(), vbByteSize, mBoxGeo->VertexBufferUploader);
-
+	/*mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), vertices.data(), vbByteSize, mBoxGeo->VertexBufferUploader);*/
+	//练习2
+	mBoxGeo->VertexPosBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), verticesPos.data(), vpbByteSize, mBoxGeo->VertexPosBufferUploader);
+	mBoxGeo->VertexColorBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), verticesColor.data(), vcbByteSize, mBoxGeo->VertexColorBufferUploader);
+	
 	mBoxGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
 		mCommandList.Get(), indices.data(), ibByteSize, mBoxGeo->IndexBufferUploader);
-	//每个顶点元素大小
-	mBoxGeo->VertexByteStride = sizeof(Vertex);
-	//创建视图的顶点缓冲区字节大小
-	mBoxGeo->VertexBufferByteSize = vbByteSize;
+	////每个顶点元素大小
+	//mBoxGeo->VertexByteStride = sizeof(Vertex);
+	////创建视图的顶点缓冲区字节大小
+	//mBoxGeo->VertexBufferByteSize = vbByteSize;
+	mBoxGeo->VertexPosByteStride = sizeof(VPosData);
+	mBoxGeo->VertexPosBufferByteSize = vpbByteSize;
+	mBoxGeo->VertexColorByteStride = sizeof(VColorData);
+	mBoxGeo->VertexColorBufferByteSize = vcbByteSize;
 	mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
 	mBoxGeo->IndexBufferByteSize = ibByteSize;
 
@@ -449,29 +533,46 @@ void BoxApp::BuildBoxGeometry()
 
 void BoxApp::BuildPSO()
 {
+	//流水线状态对象（PSO）
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
     ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+	//输入布局描述
+	//1.D3D12_INPUT_ELEMENT_DESC构成的数组
+	//2.表示此数组中元素数量（UINT）
     psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
+	//指定一个与此PSO相绑定的根签名的指针
     psoDesc.pRootSignature = mRootSignature.Get();
+	//待绑定的VS
     psoDesc.VS = 
 	{ 
 		reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()), 
 		mvsByteCode->GetBufferSize() 
 	};
+	//待绑定的PS
     psoDesc.PS = 
 	{ 
 		reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()), 
 		mpsByteCode->GetBufferSize() 
 	};
+	//指定用来配置光栅器状态。D3D12_DEFAULT被广泛应用
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	//指定混合操作所使用的混合状态
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    //用于配置深度/模板测试的深度/模板状态，
+	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	//多重采样最多32个样本，0xffffffff即为32个全采样
     psoDesc.SampleMask = UINT_MAX;
+	//指定图元的拓扑类型
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	//同时所用的渲染目标数量
     psoDesc.NumRenderTargets = 1;
+	//渲染目标格式。利用该数组实现向多渲染目标同时进行写操作
     psoDesc.RTVFormats[0] = mBackBufferFormat;
+	//描述多重采样对于每个像素采样的数量
     psoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
+	//描述多重采样对于每个像素采样的质量级别
     psoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
+	//深度/模板缓冲区的格式
     psoDesc.DSVFormat = mDepthStencilFormat;
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
 }
